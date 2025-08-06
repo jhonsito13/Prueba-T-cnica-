@@ -2,11 +2,17 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse  
 from django.contrib.auth import authenticate 
-from .models import Acta, Compromiso, Gestion, Usuario  
+from .models import Acta, Compromiso, Gestion, Usuario, Compromiso
 import json
+
 
 @csrf_exempt
 def login(request):
+    if request.method == 'OPTIONS':
+        response = JsonResponse({})
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+        
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
@@ -16,31 +22,46 @@ def login(request):
             user = authenticate(username=username, password=password)
 
             if user:
+                
+                usuario = Usuario.objects.get(id=user.id)
                 return JsonResponse({
                     'success': True,
                     'username': user.username,
-                    'email': user.email
+                    'email': user.email,
+                    'user_id': user.id,  
+                    'rol': usuario.rol   
                 })
             else:
                 return JsonResponse({'error': 'Credenciales inválidas'})
         
-        except:
+        except Exception as e:
             return JsonResponse({'error': 'Error procesando datos'})
 
     return JsonResponse({'error': 'Solo POST'})
-
+@csrf_exempt
 def acta(request, id):
     try:
         acta = Acta.objects.get(id=id)
         
         compromisos = []
         for comp in acta.compromisos.all():
+           
+            gestiones = []
+            
+            for gest in comp.gestiones.all():
+                gestiones.append({
+                    'id': gest.id,
+                    'descripcion': gest.descripcion,
+                    'fecha': gest.fecha.strftime('%Y-%m-%d %H:%M')
+                })
+            
             compromisos.append({
                 'id': comp.id,
                 'descripcion': comp.descripcion,
                 'fecha_limite': comp.fecha_limite.strftime('%Y-%m-%d'),
                 'responsable': comp.responsable.username,
-                'estado': comp.estado
+                'estado': comp.estado,
+                'gestiones': gestiones
             })
         
         data = {
@@ -54,12 +75,17 @@ def acta(request, id):
             'archivo_pdf': acta.archivo_pdf.url if acta.archivo_pdf else None
         }
         
-        return JsonResponse({'success': True, 'acta': data})
+        response = JsonResponse({'success': True, 'acta': data})
+        response['Access-Control-Allow-Origin'] = '*'  
+        return response
         
     except Acta.DoesNotExist:
-        return JsonResponse({'error': 'Acta no encontrada'}, status=404)  
+        response = JsonResponse({'error': 'Acta no encontrada'}, status=404)
+        response['Access-Control-Allow-Origin'] = '*' 
+        return response
 
-@csrf_exempt  
+
+@csrf_exempt
 def crear_gestion(request):
     if request.method == 'POST':
         try:
@@ -102,3 +128,85 @@ def crear_gestion(request):
             return JsonResponse({'error': str(e)}, status=400)
     
     return JsonResponse({'error': 'Solo POST'}, status=405)
+
+@csrf_exempt
+def actas_list(request):
+    if request.method == 'OPTIONS':
+        response = JsonResponse({})
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    if request.method == 'GET':
+        
+        estado = request.GET.get('estado')
+        titulo = request.GET.get('titulo')
+        fecha = request.GET.get('fecha')
+        
+       
+        user_id = request.GET.get('user_id')
+        rol = request.GET.get('rol')
+        
+       
+        if rol == 'ADMIN':
+            
+            actas = Acta.objects.all()
+        elif rol == 'BASE' and user_id:
+           
+            from django.db.models import Q
+            actas = Acta.objects.filter(
+                Q(creador_id=user_id) |  
+                Q(participantes__id=user_id) |  
+                Q(compromisos__responsable_id=user_id)  
+            ).distinct()  
+        else:
+           
+            actas = Acta.objects.none()
+
+        
+        if estado:
+            actas = actas.filter(estado__iexact=estado)
+        if titulo:
+            actas = actas.filter(titulo__icontains=titulo)
+        if fecha:
+            actas = actas.filter(fecha__date=fecha)
+
+        data = []
+        for acta in actas:
+            data.append({
+                'id': acta.id,
+                'titulo': acta.titulo,
+                'estado': acta.estado,
+                'fecha': acta.fecha.strftime('%Y-%m-%d %H:%M'),
+                'compromisos': acta.compromisos.count(),
+            })
+
+        response = JsonResponse({
+            'success': True,
+            'actas': data,
+            'total': len(data)
+        })
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    response = JsonResponse({'error': 'Método no permitido'})
+    response['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
+def gestiones_por_compromiso(request, compromiso_id):
+    if request.method == 'GET':
+        try:
+            gestiones = Gestion.objects.filter(compromiso_id=compromiso_id).order_by('-id')
+            data = [
+                {
+                    'id': g.id,
+                    'descripcion': g.descripcion,
+                    'fecha_creacion': g.fecha_creacion.strftime('%Y-%m-%d %H:%M'),
+                    'creador': g.creador.username if g.creador else '',
+                    'archivo_adjunto': g.archivo_adjunto.url if g.archivo_adjunto else None,
+                }
+                for g in gestiones
+            ]
+            return JsonResponse({'success': True, 'gestiones': data})
+        except Compromiso.DoesNotExist:
+            return JsonResponse({'error': 'Compromiso no encontrado'}, status=404)
